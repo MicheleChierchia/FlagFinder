@@ -46,8 +46,12 @@ class Minesweeper:
 
         for r in range(self.rows):
             for c in range(self.cols):
+                frame = tk.Frame(self.grid_frame, width=30, height=30)
+                frame.pack_propagate(False)
+                frame.grid(row=r, column=c)
+
                 btn = tk.Button(
-                    self.grid_frame, 
+                    frame, 
                     width=30, 
                     height=30, 
                     image=self.pixel_virtual,
@@ -55,7 +59,7 @@ class Minesweeper:
                     font=('Arial', 12, 'bold'),
                     bg="#dddddd"
                 )
-                btn.grid(row=r, column=c)
+                btn.pack(fill=tk.BOTH, expand=True)
                 btn.bind('<Button-1>', lambda event, r=r, c=c: self.on_left_click(r, c))
                 btn.bind('<Button-2>', lambda event, r=r, c=c: self.on_right_click(r, c)) # For Mac (sometimes)
                 btn.bind('<Button-3>', lambda event, r=r, c=c: self.on_right_click(r, c)) # For Windows/Linux
