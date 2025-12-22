@@ -129,7 +129,7 @@ class Minesweeper:
         cell['state'] = 'revealed'
         self.revealed_cells += 1
         btn = cell['btn']
-        btn.config(relief=tk.SUNKEN, bg="white")
+        btn.config(relief=tk.SUNKEN, bg="#b0b0b0")
 
         val = cell['value']
         if val > 0:
