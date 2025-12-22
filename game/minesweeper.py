@@ -22,6 +22,8 @@ class Minesweeper:
             print(f"Error loading images: {e}")
             self.bomb_image = None
             self.flag_image = None
+            
+        self.pixel_virtual = tk.PhotoImage(width=1, height=1)
 
         self.create_widgets()
         self.place_mines()
@@ -46,8 +48,10 @@ class Minesweeper:
             for c in range(self.cols):
                 btn = tk.Button(
                     self.grid_frame, 
-                    width=2, 
-                    height=2, 
+                    width=30, 
+                    height=30, 
+                    image=self.pixel_virtual,
+                    compound='c',
                     font=('Arial', 12, 'bold'),
                     bg="#dddddd"
                 )
@@ -106,13 +110,13 @@ class Minesweeper:
         if cell['state'] == 'hidden':
             cell['state'] = 'flagged'
             if self.flag_image:
-                btn.config(image=self.flag_image, width=28, height=28) # Adjust size match
+                btn.config(image=self.flag_image, width=30, height=30) # Adjust size match
             else:
-                btn.config(text='🚩', fg='red')
+                btn.config(text='🚩', fg='red', image=self.pixel_virtual, width=30, height=30)
             self.flags += 1
         elif cell['state'] == 'flagged':
             cell['state'] = 'hidden'
-            btn.config(image='', width=2, height=2) # Reset to text mode dimensions
+            btn.config(image=self.pixel_virtual, width=30, height=30) # Reset to text mode dimensions
             btn.config(text='')
             self.flags -= 1
         
@@ -147,9 +151,9 @@ class Minesweeper:
         for (r, c) in self.mine_positions:
             btn = self.buttons[(r, c)]['btn']
             if self.bomb_image:
-                btn.config(image=self.bomb_image, width=28, height=28, bg='red')
+                btn.config(image=self.bomb_image, width=30, height=30, bg='red')
             else:
-                btn.config(text='💣', bg='red')
+                btn.config(text='💣', bg='red', image=self.pixel_virtual, width=30, height=30)
         messagebox.showinfo("Game Over", "BOOM! You hit a mine.")
 
     def game_over_win(self):
