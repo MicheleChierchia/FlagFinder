@@ -1,11 +1,11 @@
 import random
 import sys
 import os
+import csv
 
-# Permette import se eseguito come script
+# Setup path come richiesto
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
-# Add game directory to sys.path to satisfy internal imports in minesweeper.py
 sys.path.append(os.path.join(project_root, 'game'))
 
 import tkinter as tk
@@ -13,24 +13,40 @@ from game.minesweeper import MinesweeperGUI
 
 class MinesweeperAI:
     def __init__(self, game_logic):
-
         self.game = game_logic
         self.running = False
+        
+        # Nome del file per il dataset
+        self.csv_filename = 'minesweeper_dataset.csv'
+        
+        # Inizializza il CSV con header se non esiste
+        if not os.path.exists(self.csv_filename):
+            try:
+                with open(self.csv_filename, mode='w', newline='') as f:
+                    writer = csv.writer(f)
+                    # 8 Features (Vicini) + 1 Target (safe)
+                    # Ordine: TopLeft, Top, TopRight, Left, Right, BottomLeft, Bottom, BottomRight, safe
+                    header = ['TL', 'T', 'TR', 'L', 'R', 'BL', 'B', 'BR', 'safe']
+                    writer.writerow(header)
+            except IOError as e:
+                print(f"Errore inizializzazione CSV: {e}")
 
     def step(self):
+        """
+        Esegue un passo dell'AI. Ritorna True se è stata fatta una mossa.
+        """
         if self.game.game_over:
             return False
 
         made_move = False
         
-        # 1. Basic Constraint Satisfaction (Hill Climbing)
+        # --- 1. Logica Deterministica (Constraint Satisfaction) ---
         for r in range(self.game.rows):
             for c in range(self.game.cols):
                 if self.game.game_over: return False
 
                 cell = self.game.board[r][c]
                 
-                # Analizziamo solo celle rivelate con numeri
                 if cell.is_revealed and cell.adjacent_mines > 0:
                     neighbors_coords = self.game.get_neighbors(r, c)
                     neighbors = [self.game.board[nr][nc] for nr, nc in neighbors_coords]
@@ -41,34 +57,31 @@ class MinesweeperAI:
                     if not hidden_coords:
                         continue
                         
-                    # Regola 1: Se value == flags + hidden, allora tutti gli hidden sono mine
+                    # Regola: Value == Flags + Hidden -> Tutto il resto è mina
                     if cell.adjacent_mines == flagged_count + len(hidden_coords):
                         for (hr, hc) in hidden_coords:
-                            # print(f"AI: Flagging ({hr}, {hc})")
                             self.game.toggle_flag(hr, hc)
                             made_move = True
                             
-                    # Regola 2: Se value == flags, allora tutti gli hidden sono sicuri
+                    # Regola: Value == Flags -> Tutto il resto è sicuro
                     elif cell.adjacent_mines == flagged_count:
                         for (hr, hc) in hidden_coords:
-                            # print(f"AI: Revealing ({hr}, {hc})")
                             self.game.reveal(hr, hc)
                             made_move = True
 
         if made_move:
             return True
 
-        # 2. Advanced Logic (Set Difference)
+        # --- 2. Logica Avanzata (Insiemi) ---
         if self.run_advanced_logic():
              return True
 
-        # 3. Guessing (se bloccato)
-        # print("AI: Stuck with deterministic logic.")
+        # --- 3. Guessing (con Data Logging) ---
+        # Se siamo qui, l'AI è bloccata e deve tirare a indovinare.
         self.make_guess()
         return True
 
     def run_advanced_logic(self):
-        # Raccogli celle attive (rivelate con vicini nascosti)
         active_cells = []
         for r in range(self.game.rows):
             for c in range(self.game.cols):
@@ -90,7 +103,6 @@ class MinesweeperAI:
         
         made_move = False
         
-        # Confronta coppie
         for i in range(len(active_cells)):
             for j in range(len(active_cells)):
                 if i == j: continue
@@ -98,7 +110,6 @@ class MinesweeperAI:
                 A = active_cells[i]
                 B = active_cells[j]
                 
-                # Se A è sottoinsieme di B
                 if A['hidden'].issubset(B['hidden']):
                     diff_set = B['hidden'] - A['hidden']
                     if not diff_set: continue
@@ -106,21 +117,63 @@ class MinesweeperAI:
                     mine_diff = B['remaining_mines'] - A['remaining_mines']
                     
                     if mine_diff == 0:
-                        # Le celle extra sono sicure
                         for (dr, dc) in diff_set:
-                            # print(f"AI: Adv Reveal ({dr}, {dc})")
                             self.game.reveal(dr, dc)
                             made_move = True
                     elif mine_diff == len(diff_set):
-                        # Le celle extra sono mine
                         for (dr, dc) in diff_set:
-                            # print(f"AI: Adv Flag ({dr}, {dc})")
                             self.game.toggle_flag(dr, dc)
                             made_move = True
         return made_move
 
+    def _record_guess_data(self, r, c, is_safe):
+        """
+        Metodo privato per salvare lo snapshot della board attorno a (r, c)
+        e l'etichetta di verità (safe).
+        """
+        data_row = []
+        
+        # Offset in senso orario da Top-Left a Bottom-Right
+        offsets = [
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)
+        ]
+        
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            
+            # --- Encoding ---
+            # -2: Muro / Fuori mappa
+            if not (0 <= nr < self.game.rows and 0 <= nc < self.game.cols):
+                data_row.append(-2)
+            else:
+                cell = self.game.board[nr][nc]
+                # -1: Cella non rivelata (o flaggata, per l'AI è "coperta")
+                if not cell.is_revealed:
+                    data_row.append(-1)
+                else:
+                    # 0-8: Valore numerico visibile
+                    data_row.append(cell.adjacent_mines)
+        
+        # Aggiungi Label (Target)
+        # 1 = SAFE, 0 = NOT SAFE (MINE)
+        data_row.append(1 if is_safe else 0)
+        
+        # Scrittura su file
+        try:
+            with open(self.csv_filename, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(data_row)
+        except Exception as e:
+            print(f"Errore durante il salvataggio dati: {e}")
+
     def make_guess(self):
-        # Preferisci la frontiera
+        """
+        Sceglie una mossa probabilistica, registra i dati per il dataset,
+        ed esegue la mossa.
+        """
+        # 1. Identifica le celle candidabili (Frontiera)
         frontier = set()
         for r in range(self.game.rows):
             for c in range(self.game.cols):
@@ -132,7 +185,7 @@ class MinesweeperAI:
         if frontier:
             gr, gc = random.choice(list(frontier))
         else:
-            # Caso iniziale o isolato: una cella a caso non rivelata
+            # Fallback: cella casuale non rivelata (es. inizio partita)
             hidden_cells = []
             for r in range(self.game.rows):
                 for c in range(self.game.cols):
@@ -141,37 +194,37 @@ class MinesweeperAI:
             if not hidden_cells: return
             gr, gc = random.choice(hidden_cells)
             
-        # print(f"AI: Guessing ({gr}, {gc})")
+        # 2. Determina la Ground Truth (Sbirciatina per il dataset)
+        is_actually_safe = not self.game.board[gr][gc].is_mine
+
+        # 3. Registra i dati (Features + Target 'safe')
+        self._record_guess_data(gr, gc, is_actually_safe)
+
+        # 4. Esegui la mossa nel gioco
         self.game.reveal(gr, gc)
 
-    # Helper per GUI loop
     def run_gui_loop(self, root, gui_update_callback):
         if not self.running:
-             # Primo click al centro
             center_r, center_c = self.game.rows // 2, self.game.cols // 2
             self.game.reveal(center_r, center_c)
             self.running = True
             gui_update_callback()
         
         if self.game.game_over:
-            print("AI: Game Over")
+            print("AI: Partita terminata.")
             return
 
         self.step()
         gui_update_callback()
         
-        # Pianifica il prossimo step
         root.after(100, lambda: self.run_gui_loop(root, gui_update_callback))
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # Usa dimensioni ragionevoli per la demo
     app = MinesweeperGUI(root)
     
-    # Crea AI
     ai = MinesweeperAI(app.game)
     
-    # Avvia il loop AI
     root.after(1, lambda: ai.run_gui_loop(root, app.update_gui))
     
     root.mainloop()
