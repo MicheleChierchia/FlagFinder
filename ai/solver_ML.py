@@ -26,7 +26,7 @@ class MinesweeperAI:
         global _CACHED_MODEL, _MODEL_ATTEMPTED
         
         # Percorso del modello
-        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'minesweeper_ai_model_opt.pkl')
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'minesweeper_ai_model.pkl')
         
         # Tenta il caricamento solo se non è mai stato provato prima o se è None
         if not _MODEL_ATTEMPTED:

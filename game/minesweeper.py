@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import os
-from game_logic import MinesweeperLogic
+from .game_logic import MinesweeperLogic
 
 class MinesweeperGUI:
     def __init__(self, master, rows=16, cols=16, mines=40):
