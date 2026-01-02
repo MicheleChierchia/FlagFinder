@@ -3,12 +3,15 @@ import sys
 import os
 import tkinter as tk
 import warnings
-import pandas as pd # Necessario per il modello
-import joblib       # Necessario per caricare il modello
+import pandas as pd 
+import joblib
+import csv 
 
-# Cache globale per il modello per evitare di ricaricarlo ad ogni istanza
+# Cache globale per il modello
 _CACHED_MODEL = None
 _MODEL_ATTEMPTED = False
+
+CSV_FILE = 'minesweeper_dataset.csv'
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -19,65 +22,95 @@ class MinesweeperAI:
         self.game = game_logic
         self.running = False
         
-        # Colonne necessarie per ricostruire il DataFrame corretto per il modello
-        self.dataset_columns = [f"cell_{r}_{c}" for r in range(-2, 3) for c in range(-2, 3) if not (r==0 and c==0)]
+        # --- TRACKING INTERNO ---
+        # Teniamo il conto noi per evitare cicli inutili
+        self.flags_count = 0 
+        
+        # --- DEFINIZIONE FEATURE ---
+        self.grid_features = [f"cell_{r}_{c}" for r in range(-2, 3) for c in range(-2, 3) if not (r==0 and c==0)]
+        self.meta_features = ['global_density'] 
+        self.dataset_columns = self.grid_features + self.meta_features
         
         # --- CARICAMENTO MODELLO ML ---
         global _CACHED_MODEL, _MODEL_ATTEMPTED
-        
-        # Percorso del modello
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'minesweeper_ai_model.pkl')
         
-        # Tenta il caricamento solo se non è mai stato provato prima o se è None
         if not _MODEL_ATTEMPTED:
             _MODEL_ATTEMPTED = True
             if os.path.exists(model_path):
                 try:
-                    # Silenzia warnings (es. VersionMismatch)
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
                         loaded_model = joblib.load(model_path)
-                    
-                    # Disabilita output verboso del modello
                     if hasattr(loaded_model, "verbose"):
                         loaded_model.verbose = 0
-                    
                     _CACHED_MODEL = loaded_model
-                    print("AI: Modello ML caricato. Modalità Probabilità Massima.")
+                    print("AI: Modello ML caricato.")
                 except Exception as e:
                     print(f"AI: Errore caricamento modello: {e}")
-        
         self.model = _CACHED_MODEL
 
+    def _place_flag(self, r, c):
+        """Wrapper per piazzare bandiere e aggiornare il conteggio."""
+        if not self.game.board[r][c].is_flagged:
+            self.game.toggle_flag(r, c)
+            self.flags_count += 1
+
     def _get_effective_value(self, r, c):
-        """Calcola il valore 'Smart' per il contesto."""
-        if not (0 <= r < self.game.rows and 0 <= c < self.game.cols):
-            return -2 # Muro
-
+        if not (0 <= r < self.game.rows and 0 <= c < self.game.cols): return -2
         cell = self.game.board[r][c]
-        if not cell.is_revealed:
-            return -1 # Incognita
+        if not cell.is_revealed: return -1
 
-        # Calcolo mine residue locali
         neighbors = self.game.get_neighbors(r, c)
+        # Qui usiamo ancora un mini-ciclo locale perché i vicini sono solo max 8 (trascurabile)
         current_flags = len([n for n in neighbors if self.game.board[n[0]][n[1]].is_flagged])
         return cell.adjacent_mines - current_flags
 
     def _get_features_for_cell(self, r, c):
-        """Estrae la riga di feature 5x5 per una singola cella."""
         features = []
+        
+        # A. Feature Locali
         for dr in range(-2, 3):
             for dc in range(-2, 3):
                 if dr == 0 and dc == 0: continue
                 val = self._get_effective_value(r + dr, c + dc)
                 features.append(val)
+        
+        # B. Feature Globale: Global Density
+        # Mine rimaste (basato sul nostro contatore veloce)
+        mines_left = self.game.mines - self.flags_count
+        
+        # Celle rivelate (Dobbiamo contarle per forza a causa del Flood Fill, ma usiamo sum veloce)
+        # Se modifichi game_logic per avere self.game.revealed_count, usa quello!
+        total_cells = self.game.rows * self.game.cols
+        revealed_count = sum(cell.is_revealed for row in self.game.board for cell in row)
+        
+        hidden_cells = total_cells - revealed_count
+        
+        if hidden_cells > 0:
+            density = mines_left / hidden_cells
+        else:
+            density = 0.0
+            
+        features.append(density)
         return features
+
+    def _save_dataset(self, features, label):
+        try:
+            file_exists = os.path.isfile(CSV_FILE)
+            with open(CSV_FILE, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(self.dataset_columns + ['safe'])
+                writer.writerow(features + [label])
+        except Exception:
+            pass
 
     def step(self):
         if self.game.game_over: return False
         made_move = False
         
-        # 1. Logica Base (Hill Climbing)
+        # 1. Logica Base
         for r in range(self.game.rows):
             for c in range(self.game.cols):
                 if self.game.game_over: return False
@@ -90,13 +123,11 @@ class MinesweeperAI:
                     
                     if not hidden: continue
                         
-                    # Rule: Hidden == Value - Flags -> Tutte Mine
                     if len(hidden) == cell.adjacent_mines - flags:
                         for hr, hc in hidden:
-                            self.game.toggle_flag(hr, hc)
+                            self._place_flag(hr, hc) # Usa il wrapper!
                             made_move = True
                             
-                    # Rule: Value == Flags -> Tutte Safe
                     elif cell.adjacent_mines == flags:
                         for hr, hc in hidden:
                             self.game.reveal(hr, hc)
@@ -104,17 +135,15 @@ class MinesweeperAI:
 
         if made_move: return True
 
-        # 2. Logica Avanzata (Insiemi)
+        # 2. Logica Avanzata
         if self.run_advanced_logic(): return True
 
-        # 3. Guessing (ML Probabilità Massima)
+        # 3. Guessing (ML o Random)
         self.make_guess_with_ml()
         return True
 
     def run_advanced_logic(self):
-        """Risolve pattern complessi (es. 1-2-1) tramite differenza insiemi."""
         active_cells = []
-        
         for r in range(self.game.rows):
             for c in range(self.game.cols):
                 cell = self.game.board[r][c]
@@ -139,7 +168,6 @@ class MinesweeperAI:
                 if A['hidden'].issubset(B['hidden']):
                     diff = B['hidden'] - A['hidden']
                     if not diff: continue
-                    
                     mine_diff = B['remaining'] - A['remaining']
                     
                     if mine_diff == 0:
@@ -148,14 +176,11 @@ class MinesweeperAI:
                             made_move = True
                     elif mine_diff == len(diff):
                         for dr, dc in diff:
-                            self.game.toggle_flag(dr, dc)
+                            self._place_flag(dr, dc) # Usa il wrapper!
                             made_move = True
         return made_move
 
     def make_guess_with_ml(self):
-        """
-        Usa il modello ML per trovare la cella con la probabilità più alta (best-first).
-        """
         frontier = set()
         for r in range(self.game.rows):
             for c in range(self.game.cols):
@@ -177,7 +202,7 @@ class MinesweeperAI:
 
         best_move = None
         
-        # --- LOGICA ML (PROBABILITÀ) ---
+        # --- PREDIZIONE ---
         if self.model:
             features_batch = []
             for r, c in frontier_list:
@@ -186,26 +211,23 @@ class MinesweeperAI:
             X_input = pd.DataFrame(features_batch, columns=self.dataset_columns)
             
             try:
-                # predict_proba restituisce array [[prob_0, prob_1], ...]
                 probs = self.model.predict_proba(X_input)
-                safe_probs = probs[:, 1] # Prendiamo solo la colonna "Safe" (Classe 1)
-                
-                # Trova l'indice della probabilità massima assoluta
+                safe_probs = probs[:, 1]
                 best_idx = safe_probs.argmax()
-                best_prob = safe_probs[best_idx]
-                
                 best_move = frontier_list[best_idx]
-                # print(f"AI: Scelgo ({best_move[0]}, {best_move[1]}) con confidenza: {best_prob:.2%}")
-                
-            except Exception as e:
-                print(f"Errore ML: {e}")
+            except Exception:
                 best_move = random.choice(frontier_list)
-        
         else:
             best_move = random.choice(frontier_list)
 
+        # --- ESECUZIONE ---
         if best_move:
+            move_features = self._get_features_for_cell(best_move[0], best_move[1])
             self.game.reveal(best_move[0], best_move[1])
+            label = 1 
+            if self.game.game_over and not self.game.victory:
+                label = 0 
+            self._save_dataset(move_features, label)
 
     def run_gui_loop(self, root, gui_update_callback):
         if not self.running:
@@ -223,7 +245,7 @@ class MinesweeperAI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = MinesweeperGUI(root)
+    app = MinesweeperGUI(root,16,30,99)
     ai = MinesweeperAI(app.game)
     root.after(100, lambda: ai.run_gui_loop(root, app.update_gui))
     root.mainloop()
